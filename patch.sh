@@ -6,6 +6,8 @@ GNRL="NVIDIA-Linux-x86_64-525.105.17"
 VGPU="NVIDIA-Linux-x86_64-525.105.14-vgpu-kvm"
 GRID="NVIDIA-Linux-x86_64-525.105.17-grid"
 #WSYS="NVIDIA-Windows-x86_64-512.15"
+#WSYS="NVIDIA-Windows-x86_64-516.25"
+#WSYS="NVIDIA-Windows-x86_64-516.59"
 #WSYS="NVIDIA-Windows-x86_64-527.41"
 #WSYS="NVIDIA-Windows-x86_64-528.24"
 WSYS="NVIDIA-Windows-x86_64-528.89"
@@ -25,6 +27,9 @@ VER_GRID=`echo ${GRID} | awk -F- '{print $4}'`
 
 NVGPLOPTPATCH=false
 FORCEUSENVGPL=false
+TDMABUFEXPORT=false
+ENVYPROBES=false
+
 CP="cp -a"
 
 case `stat -f --format=%T .` in
@@ -88,6 +93,14 @@ do
         --enable-nvidia-gpl-for-experimenting)
             shift
             FORCEUSENVGPL=true
+            ;;
+        --test-dmabuf-export)
+            shift
+            TDMABUFEXPORT=true
+            ;;
+        --envy-probes)
+            shift
+            ENVYPROBES=true
             ;;
         *)
             echo "Unknown option $1"
@@ -202,16 +215,18 @@ die() {
 }
 
 extract() {
-    [ -e ${1} ] || die "package ${1} not found"
     TDIR="${2}"
     if [ -z "${TDIR}" ]; then
         TDIR="${1%.run}"
+    fi
+    if [ -e ${1} ]; then
+        $REPACK && sh ${1} --lsm > ${TARGET}.lsm
     fi
     if [ -d ${TDIR} ]; then
         echo "WARNING: skipping extract of ${1} as it seems already extracted in ${TDIR}"
         return 0
     fi
-    $REPACK && sh ${1} --lsm > ${TARGET}.lsm
+    [ -e ${1} ] || die "package ${1} not found"
     sh ${1} --extract-only --target ${TDIR}
     chmod -R u+w ${TDIR}
 }
@@ -444,6 +459,10 @@ $NVGPLOPTPATCH && {
     applypatch ${TARGET} switch-option-to-gpl-for-debug.patch
     $FORCEUSENVGPL && sed -e '/^NVIDIA_CFLAGS += .*BIT_MACROS$/aNVIDIA_CFLAGS += -DFORCE_GPL_FOR_EXPERIMENTING' -i ${TARGET}/kernel/nvidia/nvidia.Kbuild
 }
+$TDMABUFEXPORT && {
+    applypatch ${TARGET} test-dmabuf-export.patch
+    cp -p ${TARGET}/kernel-open/nvidia/nv-dmabuf.c ${TARGET}/kernel/nvidia/nv-dmabuf.c
+}
 $DO_VGPU && applypatch ${TARGET} vgpu-kvm-optional-vgpu-v2.patch
 
 $DO_MRGD && {
@@ -469,18 +488,28 @@ if $DO_VGPU; then
     vcfgclone ${TARGET}/vgpuConfig.xml 0x1E30 0x12BA 0x1E81 0x0000	# RTX 2080 super 8GB
 	vcfgclone ${TARGET}/vgpuConfig.xml 0x1E30 0x12BA 0x1f06 0x0000	# RTX 2070 super
     vcfgclone ${TARGET}/vgpuConfig.xml 0x1E30 0x12BA 0x1f03 0x0000	# RTX 2060 12GB
+    vcfgclone ${TARGET}/vgpuConfig.xml 0x1E30 0x12BA 0x1f11 0x0000	# RTX 2060 Mobile 6GB
     vcfgclone ${TARGET}/vgpuConfig.xml 0x1E30 0x12BA 0x2184 0x0000	# GTX 1660 6GB
+    vcfgclone ${TARGET}/vgpuConfig.xml 0x1E30 0x12BA 0x1f95 0x0000	# GTX 1650 Ti Mobile 4GB
+    vcfgclone ${TARGET}/vgpuConfig.xml 0x1E30 0x12BA 0x1EB1 0x0000	# Quadro RTX 4000
     vcfgclone ${TARGET}/vgpuConfig.xml 0x1E30 0x12BA 0x1ff2 0x0000	# Quadro T400 4GB
-    vcfgclone ${TARGET}/vgpuConfig.xml 0x1E30 0x12BA 0x1f95 0x0000  # GTX 1650 Ti Mobile 4GB
     vcfgclone ${TARGET}/vgpuConfig.xml 0x1B38 0x0 0x1C82 0x0000		# GTX 1050 Ti 4GB
     vcfgclone ${TARGET}/vgpuConfig.xml 0x1B38 0x0 0x1B81 0x0000		# GTX 1070
-    vcfgclone ${TARGET}/vgpuConfig.xml 0x1B38 0x0 0x1D01 0x0000     # GTX 1030 -> Tesla P40
+    vcfgclone ${TARGET}/vgpuConfig.xml 0x1B38 0x0 0x1D01 0x0000		# GTX 1030 -> Tesla P40
     vcfgclone ${TARGET}/vgpuConfig.xml 0x13F2 0x0 0x17FD 0x0000		# Tesla M40 -> Tesla M60
     vcfgclone ${TARGET}/vgpuConfig.xml 0x13F2 0x0 0x13C0 0x0000		# GTX 980 -> Tesla M60
     vcfgclone ${TARGET}/vgpuConfig.xml 0x13F2 0x0 0x13D7 0x0000		# GTX 980M -> Tesla M60
     vcfgclone ${TARGET}/vgpuConfig.xml 0x13BD 0x1160 0x139A 0x0000	# GTX 950M -> Tesla M10
     echo
 fi
+
+$ENVYPROBES && {
+    applypatch ${TARGET} envy_probes-ioctl-hooks-from-mbuchel.patch
+    sed -e '/^NVIDIA_CFLAGS += .*BIT_MACROS$/aNVIDIA_CFLAGS += -DENVY_LINUX' -i ${TARGET}/kernel/nvidia/nvidia.Kbuild
+    echo 'NVIDIA_SOURCES += unlock/envy_probes.c' >> ${TARGET}/kernel/nvidia/nvidia-sources.Kbuild
+    echo "kernel/common/inc/envy_probes.h 0644 KERNEL_MODULE_SRC INHERIT_PATH_DEPTH:1 MODULE:vgpu" >>${TARGET}/.manifest
+    echo "kernel/unlock/envy_probes.c 0644 KERNEL_MODULE_SRC INHERIT_PATH_DEPTH:1 MODULE:vgpu" >>${TARGET}/.manifest
+}
 
 if $REPACK; then
     REPACK_OPTS="${REPACK_OPTS:---silent}"
